@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Functions/IFunctionImpl.h>
+#include <iostream>
 
 namespace DB
 {
@@ -109,6 +110,16 @@ public:
 
     FunctionBaseImplPtr buildImpl(const ColumnsWithTypeAndName & arguments) const
     {
+        std::cerr << "FunctionOverloadResolverAdapter::buildImpl " << getName() << std::endl;
+        for (const auto & argument : arguments)
+        {
+            std::cerr << "Argument " << argument.name << " type " << argument.type->getName();
+
+            if (argument.column)
+                std::cerr << " dump structure " << argument.column->dumpStructure() << std::endl;
+            else
+                std::cerr << std::endl;
+        }
         return impl->build(arguments, getReturnType(arguments));
     }
 

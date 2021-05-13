@@ -677,8 +677,13 @@ bool KeyCondition::canConstantBeWrappedByFunctions(
     if (out_value.isNull())
         return false;
 
+    std::cerr << "KeyCondition::canConstantBeWrappedByFunctions " << ast->dumpTree(0) << std::endl;
+    std::cerr << key_expr->getActionsDAG().dumpDAG() << std::endl;
+
     for (const auto & node : key_expr->getNodes())
     {
+        std::cerr << "Node " << node.result_name << " node result type " << node.result_type->getName() << std::endl;
+
         auto it = key_columns.find(node.result_name);
         if (it != key_columns.end())
         {

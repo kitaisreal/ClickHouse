@@ -50,10 +50,18 @@ ExpressionActions::ExpressionActions(ActionsDAGPtr actions_dag_, const Expressio
 {
     actions_dag = actions_dag_->clone();
 
+    std::cerr << "ExpressionActions::ExpressionActions " << static_cast<void *>(this);
+    std::cerr << " compile expressions " << settings.compile_expressions << std::endl;
+    std::cerr << "DAG before compilation " << std::endl;
+    std::cerr << actions_dag->dumpDAG() << std::endl;
+
 #if USE_EMBEDDED_COMPILER
     if (settings.compile_expressions)
         actions_dag->compileExpressions(settings.min_count_to_compile_expression);
 #endif
+
+    std::cerr << "DAG after compilation " << std::endl;
+    std::cerr << actions_dag->dumpDAG() << std::endl;
 
     linearizeActions();
 

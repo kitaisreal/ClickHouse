@@ -478,6 +478,16 @@ QueryPlanPtr MergeTreeDataSelectExecutor::readFromParts(
 
             minmax_idx_condition.emplace(
                 query_info, context, minmax_columns_names, data.getMinMaxExpr(partition_key, ExpressionActionsSettings::fromContext(context)));
+
+            const auto & metadata_partition_key = metadata_snapshot_base->getPartitionKey();
+            std::cerr << "MergeTreeDataSelectExecutor::readFromParts " << metadata_partition_key.expression->dumpActions();
+            std::cerr << " datatypes " << metadata_partition_key.data_types.size();
+            std::cerr << " expression list ast " << metadata_partition_key.expression_list_ast->dumpTree(0);
+            std::cerr << " definition ast " << metadata_partition_key.definition_ast->dumpTree(0) << std::endl;
+
+            std::cerr << "ActionsDAG" << std::endl;
+            std::cerr << metadata_partition_key.expression->getActionsDAG().dumpDAG() << std::endl;
+
             partition_pruner.emplace(metadata_snapshot_base->getPartitionKey(), query_info, context, false /* strict */);
 
             if (settings.force_index_by_date && (minmax_idx_condition->alwaysUnknownOrTrue() && partition_pruner->isUseless()))
