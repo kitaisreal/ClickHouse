@@ -2,6 +2,9 @@
 #include <iomanip>
 #include <vector>
 
+#define DBMS_HASH_MAP_DEBUG_RESIZES
+// #define DBMS_HASH_MAP_RESIZE_METHOD_OLD
+
 #include <unordered_map>
 
 #include <sparsehash/dense_hash_map>

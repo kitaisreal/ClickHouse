@@ -341,8 +341,20 @@ struct ZeroValueStorage<false, Cell>
     const Cell * zeroValue() const { return nullptr; }
 };
 
+template <bool enable, typename Allocator, typename Cell>
+struct AllocatorBufferDeleter;
+
 template <typename Allocator, typename Cell>
-struct AllocatorBufferDeleter
+struct AllocatorBufferDeleter<false, Allocator, Cell>
+{
+    AllocatorBufferDeleter(Allocator &, size_t) {}
+
+    void operator()(Cell *) const {}
+
+};
+
+template <typename Allocator, typename Cell>
+struct AllocatorBufferDeleter<true, Allocator, Cell>
 {
     AllocatorBufferDeleter(Allocator & allocator_, size_t size_)
         : allocator(allocator_)
@@ -483,10 +495,60 @@ protected:
 
         size_t old_buffer_size = getBufferSizeInBytes();
 
+#ifdef DBMS_HASH_MAP_RESIZE_METHOD_OLD
+        /** If cell required to be notified during move we need to temporary keep old buffer
+         * because realloc does not quarantee for reallocated buffer to have same base address
+         */
+        using Deleter = AllocatorBufferDeleter<Cell::need_to_notify_cell_during_move, Allocator, Cell>;
+        Deleter buffer_deleter(*this, old_buffer_size);
+        std::unique_ptr<Cell, Deleter> old_buffer(buf, buffer_deleter);
+
+        if constexpr (Cell::need_to_notify_cell_during_move)
+        {
+            buf = reinterpret_cast<Cell *>(Allocator::alloc(new_grower.bufSize() * sizeof(Cell)));
+            memcpy(reinterpret_cast<void *>(buf), reinterpret_cast<const void *>(old_buffer.get()), old_buffer_size);
+        }
+        else
+            buf = reinterpret_cast<Cell *>(Allocator::realloc(buf, old_buffer_size, new_grower.bufSize() * sizeof(Cell)));
+
+        grower = new_grower;
+
+        /** Now some items may need to be moved to a new location.
+          * The element can stay in place, or move to a new location "on the right",
+          *  or move to the left of the collision resolution chain, because the elements to the left of it have been moved to the new "right" location.
+          */
+        size_t i = 0;
+        for (; i < old_size; ++i)
+            if (!buf[i].isZero(*this))
+            {
+                size_t updated_place_value = reinsert(buf[i], buf[i].getHash(*this));
+
+                if constexpr (Cell::need_to_notify_cell_during_move)
+                    Cell::move(&(old_buffer.get())[i], &buf[updated_place_value]);
+            }
+
+        /** There is also a special case:
+          *    if the element was to be at the end of the old buffer,                  [        x]
+          *    but is at the beginning because of the collision resolution chain,      [o       x]
+          *    then after resizing, it will first be out of place again,               [        xo        ]
+          *    and in order to transfer it where necessary,
+          *    after transferring all the elements from the old halves you need to     [         o   x    ]
+          *    process tail from the collision resolution chain immediately after it   [        o    x    ]
+          */
+        size_t new_size = grower.bufSize();
+        for (; i < new_size && !buf[i].isZero(*this); ++i)
+        {
+            size_t updated_place_value = reinsert(buf[i], buf[i].getHash(*this));
+
+            if constexpr (Cell::need_to_notify_cell_during_move)
+                if (&buf[i] != &buf[updated_place_value])
+                    Cell::move(&buf[i], &buf[updated_place_value]);
+        }
+#else
         /** If cell required to be notified during move we need to temporary keep old buffer
             * because realloc does not quarantee for reallocated buffer to have same base address
             */
-        using Deleter = AllocatorBufferDeleter<Allocator, Cell>;
+        using Deleter = AllocatorBufferDeleter<true, Allocator, Cell>;
         Deleter buffer_deleter(*this, old_buffer_size);
         std::unique_ptr<Cell, Deleter> old_buffer_holder(buf, buffer_deleter);
 
@@ -541,6 +603,7 @@ protected:
                 if (&buf[i] != &buf[updated_place_value])
                     Cell::move(&buf[i], &buf[updated_place_value]);
         }
+#endif
 
 #ifdef DBMS_HASH_MAP_DEBUG_RESIZES
         watch.stop();
