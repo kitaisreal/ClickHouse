@@ -23,6 +23,7 @@
 #include <Common/HashTable/HashTableAllocator.h>
 #include <Common/HashTable/HashTableKeyHolder.h>
 
+#define DBMS_HASH_MAP_RESIZE_METHOD_OLD
 #ifdef DBMS_HASH_MAP_DEBUG_RESIZES
     #include <iostream>
     #include <iomanip>
