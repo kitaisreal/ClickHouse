@@ -38,3 +38,6 @@ target_link_libraries (two_level_hash_map PRIVATE dbms)
 
 add_executable (jit_example jit_example.cpp)
 target_link_libraries (jit_example PRIVATE dbms)
+
+add_executable (identifier_resolver identifier_resolver.cpp)
+target_link_libraries (identifier_resolver PRIVATE dbms)
