@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <stack>
 #include <string>
 
 #include <DataTypes/IDataType.h>
@@ -83,7 +84,7 @@ public:
 
     virtual ~ITable() {}
 
-    virtual std::vector<IdentifierPtr> resolveIdentifiers(const IdentifierPath & path) const = 0;
+    virtual IdentifierPtr resolveIdentifier(const IdentifierPath & path) const = 0;
 
     /// TODO: Aliases
 
@@ -98,6 +99,15 @@ public:
     virtual bool hasTable(const String & table) const = 0;
 
     virtual TablePtr getTable(const String & table) const = 0;
+
+};
+
+class IIdentiiferResolver
+{
+
+    /// Resolve identifier for given path.
+    /// Returns valid identifier or nullptr
+    virtual IdentifierPtr resolveIdentifier(const IdentifierPath & path) = 0;
 
 };
 
@@ -251,7 +261,7 @@ public:
         return expression;
     }
 
-    std::vector<IdentifierPtr> resolveIdentifiers(const IdentifierPath & identifier_path) const
+    IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
     {
         assert(!path.empty());
 
@@ -266,7 +276,7 @@ public:
         }
         else if (type == Type::table)
         {
-            return getTable()->resolveIdentifiers(identifier_path);
+            return getTable()->resolveIdentifier(identifier_path);
         }
         else if (type == Type::alias)
         {
@@ -277,7 +287,7 @@ public:
                 for (size_t i = 1; i < identifier_path.size(); ++i)
                     resolve_path.emplace_back(identifier_path[i]);
 
-                return alias_identifier->resolveIdentifiers(resolve_path);
+                return alias_identifier->resolveIdentifier(resolve_path);
             }
             else
             {
@@ -288,7 +298,47 @@ public:
         {
             throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
         }
+
     }
+
+    // std::vector<IdentifierPtr> resolveIdentifiers(const IdentifierPath & identifier_path) const
+    // {
+    //     assert(!path.empty());
+
+    //     if (type == Type::constant)
+    //     {
+    //         return {};
+    //     }
+    //     else if (type == Type::column)
+    //     {
+    //         /// TODO: Nested identifiers are not yet supported
+    //         return {};
+    //     }
+    //     else if (type == Type::table)
+    //     {
+    //         return getTable()->resolveIdentifiers(identifier_path);
+    //     }
+    //     else if (type == Type::alias)
+    //     {
+    //         if (identifier_path[0] == path[0])
+    //         {
+    //             IdentifierPath resolve_path = alias_identifier->path;
+
+    //             for (size_t i = 1; i < identifier_path.size(); ++i)
+    //                 resolve_path.emplace_back(identifier_path[i]);
+
+    //             return alias_identifier->resolveIdentifiers(resolve_path);
+    //         }
+    //         else
+    //         {
+    //             return {};
+    //         }
+    //     }
+    //     else
+    //     {
+    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
+    //     }
+    // }
 
     std::string dump() const
     {
@@ -456,81 +506,127 @@ public:
             tables.emplace_back(std::move(table));
     }
 
-    std::vector<IdentifierPtr> resolveIdentifiers(const IdentifierPath & identifier_path)
+    void addUnresolvedIdentifier(ASTIdentifier identifier)
     {
-        std::vector<IdentifierPtr> result_identifiers;
-        std::set<TablePtr> tables_to_skip;
+        unresolved_identifiers.emplace_back(identifier);
+    }
 
-        for (const auto & identifier : identifiers)
+    IdentifierPtr resolveIdentifierFromTables(const IdentifierPath & identifier_path)
+    {
+        IdentifierPtr identifier;
+
+        for (const auto & table : tables)
         {
-            if (identifier->getPath() == identifier_path)
-            {
-                /// Do not check associated table if identifier from that table match identifier path
+            auto resolved_identifier = table->resolveIdentifier(identifier_path);
 
-                auto table = identifier->getTable();
-                if (table)
-                    tables_to_skip.insert(table);
+            if (identifier)
+                throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigious identifier {}", toString(identifier_path));
 
-                result_identifiers.push_back(identifier);
-                continue;
-            }
-
-            if (identifier->getType() == Identifier::Type::table)
-                continue;
-
-            auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
-
-            for (const auto & resolved_identifier : resolved_identifiers)
-                result_identifiers.emplace_back(resolved_identifier);
+            identifier = resolved_identifier;
         }
 
-        for (const auto & identifier : identifiers)
-        {
-            if (identifier->getType() != Identifier::Type::table)
-                continue;
-
-            if (tables_to_skip.contains(identifier->getTable()))
-                continue;
-
-            auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
-
-            for (const auto & resolved_identifier : resolved_identifiers)
-                result_identifiers.emplace_back(resolved_identifier);
-        }
-
-        return result_identifiers;
+        return identifier;
     }
 
-    IdentifierPtr tryResolveIdentifier(const IdentifierPath & identifier_path)
-    {
-        auto resolved_identifiers = resolveIdentifiers(identifier_path);
-        return resolved_identifiers.empty() ? nullptr : resolved_identifiers[0];
-    }
+    // void resolveUnresolvedIdentifiers()
+    // {
+    //     enum ResolveState
+    //     {
+    //         resolved,
+    //         in_resolve_process
+    //     };
 
-    IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
-    {
-        auto resolved_identifiers = resolveIdentifiers(identifier_path);
+    //     std::unordered_map<IAST *, ResolveState> identifier_to_resolve_state;
+    //     std::vector<ASTPtr> unresolved_identifiers_stack;
+    //     // unresolved_identifiers_stack.insert(unresolved_identifiers.begin(), unresolved_identifiers.end());
 
-        if (resolved_identifiers.empty())
-            throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unknown identifier {}", toString(identifier_path));
+    //     while (unresolved_identifiers_stack.empty())
+    //     {
+    //         auto identifier_to_resolve = unresolved_identifiers_stack.back();
+    //         unresolved_identifiers_stack.pop_back();
 
-        if (resolved_identifiers.size() > 1)
-            throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigous identifier {}", toString(identifier_path));
+    //         auto it = identifier_to_resolve_state.find(identifier_to_resolve.get());
+    //         if (it != identifier_to_resolve_state.end())
+    //         {
+    //         }
+    //     }
+    // }
 
-        return resolved_identifiers[0];
-    }
+    // IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
+    // {
+    //     IdentifierPtr result_identifier;
+    //     std::set<TablePtr> tables_to_skip;
 
-    IdentifierPtr tryResolveIdentifier(const String & identifier_path)
-    {
-        auto path = identifierPathFromString(identifier_path);
-        return tryResolveIdentifier(path);
-    }
+    //     for (const auto & identifier : identifiers)
+    //     {
+    //         if (identifier->getPath() == identifier_path)
+    //         {
+    //             /// Do not check associated table if identifier from that table match identifier path
 
-    IdentifierPtr resolveIdentifier(const String & identifier_path)
-    {
-        auto path = identifierPathFromString(identifier_path);
-        return resolveIdentifier(path);
-    }
+    //             auto table = identifier->getTable();
+    //             if (table)
+    //                 tables_to_skip.insert(table);
+
+    //             result_identifiers.push_back(identifier);
+    //             continue;
+    //         }
+
+    //         if (identifier->getType() == Identifier::Type::table)
+    //             continue;
+
+    //         auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
+
+    //         for (const auto & resolved_identifier : resolved_identifiers)
+    //             result_identifiers.emplace_back(resolved_identifier);
+    //     }
+
+    //     for (const auto & identifier : identifiers)
+    //     {
+    //         if (identifier->getType() != Identifier::Type::table)
+    //             continue;
+
+    //         if (tables_to_skip.contains(identifier->getTable()))
+    //             continue;
+
+    //         auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
+
+    //         for (const auto & resolved_identifier : resolved_identifiers)
+    //             result_identifiers.emplace_back(resolved_identifier);
+    //     }
+
+    //     return result_identifiers;
+    // }
+
+    // IdentifierPtr tryResolveIdentifier(const IdentifierPath & identifier_path)
+    // {
+    //     auto resolved_identifiers = resolveIdentifiers(identifier_path);
+    //     return resolved_identifiers.empty() ? nullptr : resolved_identifiers[0];
+    // }
+
+    // IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
+    // {
+    //     auto resolved_identifiers = resolveIdentifiers(identifier_path);
+
+    //     if (resolved_identifiers.empty())
+    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unknown identifier {}", toString(identifier_path));
+
+    //     if (resolved_identifiers.size() > 1)
+    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigous identifier {}", toString(identifier_path));
+
+    //     return resolved_identifiers[0];
+    // }
+
+    // IdentifierPtr tryResolveIdentifier(const String & identifier_path)
+    // {
+    //     auto path = identifierPathFromString(identifier_path);
+    //     return tryResolveIdentifier(path);
+    // }
+
+    // IdentifierPtr resolveIdentifier(const String & identifier_path)
+    // {
+    //     auto path = identifierPathFromString(identifier_path);
+    //     return resolveIdentifier(path);
+    // }
 
     Scope * getParentScope() const
     {
@@ -572,6 +668,8 @@ private:
     std::vector<TablePtr> tables;
 
     std::vector<IdentifierPtr> identifiers;
+
+    std::vector<ASTIdentifier> unresolved_identifiers;
 
     Scope * parent_scope;
 
@@ -687,7 +785,7 @@ private:
         }
     }
 
-    static void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope)
+    static void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope, std::vector<IdentifierPtr> & unresolved_identifiers)
     {
         for (const auto & expression_element : expression_List.children)
             addExpressionElementIntoScope(expression_element, scope);
@@ -699,9 +797,17 @@ private:
 
         if (const auto * identifier = expression_part->as<ASTIdentifier>())
         {
-            auto scope_identifier = scope->resolveIdentifier(identifier->name_parts);
-            scope->addIdentifier(scope_identifier);
-            addAliasIntoScopeIfNeeded(scope_identifier, *identifier, scope);
+            auto scope_identifier = scope->resolveIdentifierFromTables(identifier->name_parts);
+
+            if (scope_identifier)
+            {
+                scope->addIdentifier(scope_identifier);
+                addAliasIntoScopeIfNeeded(scope_identifier, *identifier, scope);
+            }
+            else
+            {
+
+            }
         }
         else if (const auto * select_literal = expression_part->as<ASTLiteral>())
         {
