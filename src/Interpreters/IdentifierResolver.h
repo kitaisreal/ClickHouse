@@ -25,6 +25,7 @@ namespace ErrorCodes
     extern const int UNSUPPORTED_METHOD;
     extern const int UNKNOWN_DATABASE;
     extern const int UNKNOWN_TABLE;
+    extern const int UNKNOWN_IDENTIFIER;
 }
 
 class Scope;
@@ -84,9 +85,17 @@ public:
 
     virtual ~ITable() {}
 
-    virtual IdentifierPtr resolveIdentifier(const IdentifierPath & path) const = 0;
+    virtual StorageID getStorageID() const = 0;
+
+    /// TODO: Normalize path
+    virtual bool hasPath(const IdentifierPath & path) const = 0;
+
+    /// TODO: Normalize path
+    virtual DataTypePtr resolvePath(const IdentifierPath & path) const = 0;
 
     /// TODO: Aliases
+
+    /// TODO: Asterisk
 
 };
 
@@ -96,18 +105,11 @@ public:
 
     virtual ~IDatabaseUpdated() {}
 
+    virtual String getName() const = 0;
+
     virtual bool hasTable(const String & table) const = 0;
 
     virtual TablePtr getTable(const String & table) const = 0;
-
-};
-
-class IIdentiiferResolver
-{
-
-    /// Resolve identifier for given path.
-    /// Returns valid identifier or nullptr
-    virtual IdentifierPtr resolveIdentifier(const IdentifierPath & path) = 0;
 
 };
 
@@ -157,20 +159,25 @@ public:
         return identifier;
     }
 
-    static IdentifierPtr createForColumn(const IdentifierPath & path, DataTypePtr data_type, TablePtr table)
+    static IdentifierPtr createForColumn(const IdentifierPath & path, DataTypePtr data_type, TablePtr table, DatabaseUpdatedPtr database)
     {
+        assert(path.size() == 3);
+
         auto identifier = std::make_shared<Identifier>();
 
         identifier->type = Type::column;
         identifier->data_type = data_type;
         identifier->path = path;
         identifier->table = std::move(table);
+        identifier->database = database;
 
         return identifier;
     }
 
     static IdentifierPtr createForTable(const IdentifierPath & path, TablePtr table, DatabaseUpdatedPtr database)
     {
+        assert(path.size() == 2);
+
         auto identifier = std::make_shared<Identifier>();
 
         identifier->type = Type::table;
@@ -276,7 +283,14 @@ public:
         }
         else if (type == Type::table)
         {
-            return getTable()->resolveIdentifier(identifier_path);
+            if (table->hasPath(identifier_path))
+            {
+                return {};
+            }
+            else
+            {
+                return {};
+            }
         }
         else if (type == Type::alias)
         {
@@ -300,45 +314,6 @@ public:
         }
 
     }
-
-    // std::vector<IdentifierPtr> resolveIdentifiers(const IdentifierPath & identifier_path) const
-    // {
-    //     assert(!path.empty());
-
-    //     if (type == Type::constant)
-    //     {
-    //         return {};
-    //     }
-    //     else if (type == Type::column)
-    //     {
-    //         /// TODO: Nested identifiers are not yet supported
-    //         return {};
-    //     }
-    //     else if (type == Type::table)
-    //     {
-    //         return getTable()->resolveIdentifiers(identifier_path);
-    //     }
-    //     else if (type == Type::alias)
-    //     {
-    //         if (identifier_path[0] == path[0])
-    //         {
-    //             IdentifierPath resolve_path = alias_identifier->path;
-
-    //             for (size_t i = 1; i < identifier_path.size(); ++i)
-    //                 resolve_path.emplace_back(identifier_path[i]);
-
-    //             return alias_identifier->resolveIdentifiers(resolve_path);
-    //         }
-    //         else
-    //         {
-    //             return {};
-    //         }
-    //     }
-    //     else
-    //     {
-    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
-    //     }
-    // }
 
     std::string dump() const
     {
@@ -501,132 +476,81 @@ public:
         identifier->setScope(this);
         identifiers.emplace_back(identifier);
 
-        auto table = identifier->getTable();
-        if (table)
-            tables.emplace_back(std::move(table));
+        if (identifier->getTable())
+            tables_identifiers.emplace_back(identifier);
     }
 
-    void addUnresolvedIdentifier(ASTIdentifier identifier)
+    void addUnresolvedIdentifier(const ASTIdentifier * identifier)
     {
         unresolved_identifiers.emplace_back(identifier);
     }
 
     IdentifierPtr resolveIdentifierFromTables(const IdentifierPath & identifier_path)
     {
-        IdentifierPtr identifier;
+        TablePtr resolved_table;
+        DataTypePtr identifier_type;
 
-        for (const auto & table : tables)
+        for (const auto & table : tables_identifiers)
         {
-            auto resolved_identifier = table->resolveIdentifier(identifier_path);
+            auto type = table->resolvePath(identifier_path);
 
-            if (identifier)
+            if (resolved_table)
                 throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigious identifier {}", toString(identifier_path));
 
-            identifier = resolved_identifier;
+            resolved_table = table;
+            identifier_type = type;
         }
 
-        return identifier;
+        Identifier::createForColumn({resolved_table->database->getName()}, identifier_type, table, table->getDatabase());
+        return identifier_type;
     }
 
-    // void resolveUnresolvedIdentifiers()
-    // {
-    //     enum ResolveState
-    //     {
-    //         resolved,
-    //         in_resolve_process
-    //     };
+    void resolveUnresolvedIdentifiers()
+    {
+        struct ResolveIdentifierData
+        {
+            enum ResolveStatus
+            {
+                unresolved,
+                in_resolve_process,
+                resolved
+            };
 
-    //     std::unordered_map<IAST *, ResolveState> identifier_to_resolve_state;
-    //     std::vector<ASTPtr> unresolved_identifiers_stack;
-    //     // unresolved_identifiers_stack.insert(unresolved_identifiers.begin(), unresolved_identifiers.end());
+            ResolveStatus status;
+            IdentifierPtr identifier;
+        };
 
-    //     while (unresolved_identifiers_stack.empty())
-    //     {
-    //         auto identifier_to_resolve = unresolved_identifiers_stack.back();
-    //         unresolved_identifiers_stack.pop_back();
+        std::unordered_map<std::string_view, IdentifierPtr> alias_name_to_identifier;
+        std::unordered_map<std::string_view, ResolveIdentifierData> unresolved_identifier_to_data;
 
-    //         auto it = identifier_to_resolve_state.find(identifier_to_resolve.get());
-    //         if (it != identifier_to_resolve_state.end())
-    //         {
-    //         }
-    //     }
-    // }
+        for (const auto & identifier : identifiers)
+        {
+            if (identifier->getType() == Identifier::Type::alias)
+                alias_name_to_identifier[toString(identifier->getPath())] = identifier;
+        }
 
-    // IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
-    // {
-    //     IdentifierPtr result_identifier;
-    //     std::set<TablePtr> tables_to_skip;
+        for (const auto & unresolved_identifier : unresolved_identifiers)
+        {
+            auto alias = unresolved_identifier->tryGetAlias();
 
-    //     for (const auto & identifier : identifiers)
-    //     {
-    //         if (identifier->getPath() == identifier_path)
-    //         {
-    //             /// Do not check associated table if identifier from that table match identifier path
+            if (!alias.empty())
+                unresolved_identifier_to_data[alias] = {ResolveIdentifierData::unresolved, nullptr };
+        }
 
-    //             auto table = identifier->getTable();
-    //             if (table)
-    //                 tables_to_skip.insert(table);
+        for (const auto & unresolved_identifier : unresolved_identifiers)
+        {
+            const auto & name_parts = unresolved_identifier->name_parts;
+            auto alias_part = name_parts[0];
 
-    //             result_identifiers.push_back(identifier);
-    //             continue;
-    //         }
+            auto resolved_alias_it = alias_name_to_identifier.find(alias_part);
+            if (resolved_alias_it != alias_name_to_identifier.end())
+            {
+                unresolved_identifier_to_data[]
+            }
+        }
 
-    //         if (identifier->getType() == Identifier::Type::table)
-    //             continue;
 
-    //         auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
-
-    //         for (const auto & resolved_identifier : resolved_identifiers)
-    //             result_identifiers.emplace_back(resolved_identifier);
-    //     }
-
-    //     for (const auto & identifier : identifiers)
-    //     {
-    //         if (identifier->getType() != Identifier::Type::table)
-    //             continue;
-
-    //         if (tables_to_skip.contains(identifier->getTable()))
-    //             continue;
-
-    //         auto resolved_identifiers = identifier->resolveIdentifiers(identifier_path);
-
-    //         for (const auto & resolved_identifier : resolved_identifiers)
-    //             result_identifiers.emplace_back(resolved_identifier);
-    //     }
-
-    //     return result_identifiers;
-    // }
-
-    // IdentifierPtr tryResolveIdentifier(const IdentifierPath & identifier_path)
-    // {
-    //     auto resolved_identifiers = resolveIdentifiers(identifier_path);
-    //     return resolved_identifiers.empty() ? nullptr : resolved_identifiers[0];
-    // }
-
-    // IdentifierPtr resolveIdentifier(const IdentifierPath & identifier_path)
-    // {
-    //     auto resolved_identifiers = resolveIdentifiers(identifier_path);
-
-    //     if (resolved_identifiers.empty())
-    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unknown identifier {}", toString(identifier_path));
-
-    //     if (resolved_identifiers.size() > 1)
-    //         throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigous identifier {}", toString(identifier_path));
-
-    //     return resolved_identifiers[0];
-    // }
-
-    // IdentifierPtr tryResolveIdentifier(const String & identifier_path)
-    // {
-    //     auto path = identifierPathFromString(identifier_path);
-    //     return tryResolveIdentifier(path);
-    // }
-
-    // IdentifierPtr resolveIdentifier(const String & identifier_path)
-    // {
-    //     auto path = identifierPathFromString(identifier_path);
-    //     return resolveIdentifier(path);
-    // }
+    }
 
     Scope * getParentScope() const
     {
@@ -653,9 +577,7 @@ public:
         WriteBufferFromOwnString out;
 
         for (const auto & identifier : identifiers)
-        {
             out << identifier->dump() << "\n";
-        }
 
         return out.str();
     }
@@ -665,11 +587,11 @@ private:
 
     std::vector<ScopePtr> inner_scopes;
 
-    std::vector<TablePtr> tables;
+    std::vector<TablePtr> tables_identifiers;
 
     std::vector<IdentifierPtr> identifiers;
 
-    std::vector<ASTIdentifier> unresolved_identifiers;
+    std::vector<const ASTIdentifier *> unresolved_identifiers;
 
     Scope * parent_scope;
 
@@ -678,13 +600,21 @@ private:
 class IdentifierResolver
 {
 public:
+    struct Settings
+    {
+        String default_database_name;
+        bool prefer_column_name_to_alias;
+    };
+
     explicit IdentifierResolver(
         ASTPtr select_with_union_query_,
         DatabaseCatalogPtr database_catalog_,
-        FunctionCatalogPtr function_catalog_)
+        FunctionCatalogPtr function_catalog_,
+        const Settings & settings_)
     : select_with_union_query(select_with_union_query_)
     , database_catalog(database_catalog_)
     , function_catalog(function_catalog_)
+    , settings(settings_)
     {
         initialize();
     }
@@ -696,11 +626,6 @@ public:
 
 private:
 
-    ASTPtr select_with_union_query;
-
-    DatabaseCatalogPtr database_catalog;
-
-    FunctionCatalogPtr function_catalog;
 
     void initialize()
     {
@@ -785,7 +710,7 @@ private:
         }
     }
 
-    static void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope, std::vector<IdentifierPtr> & unresolved_identifiers)
+    static void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope)
     {
         for (const auto & expression_element : expression_List.children)
             addExpressionElementIntoScope(expression_element, scope);
@@ -793,8 +718,6 @@ private:
 
     static void addExpressionElementIntoScope(const ASTPtr & expression_part, ScopePtr & scope)
     {
-        std::cerr << "IdentifierResolver::addExpressionElementIntoScope " << expression_part->dumpTree() << std::endl;
-
         if (const auto * identifier = expression_part->as<ASTIdentifier>())
         {
             auto scope_identifier = scope->resolveIdentifierFromTables(identifier->name_parts);
@@ -806,7 +729,7 @@ private:
             }
             else
             {
-
+                scope->addUnresolvedIdentifier(identifier);
             }
         }
         else if (const auto * select_literal = expression_part->as<ASTLiteral>())
@@ -831,6 +754,14 @@ private:
             scope->addIdentifier(alias_identifier);
         }
     }
+
+    ASTPtr select_with_union_query;
+
+    DatabaseCatalogPtr database_catalog;
+
+    FunctionCatalogPtr function_catalog;
+
+    Settings settings;
 
     std::vector<ScopePtr> scopes;
 };
