@@ -45,6 +45,7 @@ public:
     IdentifierResolvedResult resolvePath(const IdentifierPath & path) const override
     {
         /// TODO: Add support for complex types
+        std::cerr << "MockTable::resolvePath start " << toString(path) << std::endl;
 
         auto database_name = storage_id.getDatabaseName();
         auto table_name = storage_id.getTableName();
@@ -54,7 +55,10 @@ public:
             return {normalizePath({path_start}), type};
 
         if (path.size() == 1)
+        {
+            std::cerr << "MockTable::resolvePath finished no identifier" << std::endl;
             return {};
+        }
 
         if (path_start == table_name)
         {
@@ -65,7 +69,10 @@ public:
         }
 
         if (path.size() == 2)
+        {
+            std::cerr << "MockTable::resolvePath finished no identifier" << std::endl;
             return {};
+        }
 
         if (path_start == database_name && path[1] == table_name)
         {
@@ -75,6 +82,7 @@ public:
                 return {normalizePath({column_name}), type};
         }
 
+        std::cerr << "MockTable::resolvePath finished no identifier" << std::endl;
         return {};
     }
 
@@ -206,7 +214,7 @@ int main(int argc, char ** argv)
 
     catalog->registerDatabase(database);
 
-    std::string query = "SELECT 1 AS a, a as b, b as c, c FROM test_table";
+    std::string query = "SELECT b.test_column_1 AS c, c FROM test_table AS b";
 
     ParserSelectWithUnionQuery parser;
     ASTPtr ast = parseQuery(parser, query, 1000, 1000);
@@ -223,6 +231,8 @@ int main(int argc, char ** argv)
     IdentifierResolver resolver(ast, catalog, nullptr, settings);
 
     const auto & scopes = resolver.getScopes();
+
+    resolver.getIdentifierForPath("b.test_column_1");
     auto outer_scope = scopes[0];
     std::cerr << "Scope dump " << std::endl;
     std::cerr << outer_scope->dump() << std::endl;
