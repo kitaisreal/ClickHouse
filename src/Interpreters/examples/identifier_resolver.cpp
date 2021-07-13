@@ -206,7 +206,7 @@ int main(int argc, char ** argv)
 
     catalog->registerDatabase(database);
 
-    std::string query = "SELECT test_column_1 AS b, test_column_1, (test_column_1 + 1) AS b FROM test_table";
+    std::string query = "SELECT 1 AS a, a as b, b as c, c FROM test_table";
 
     ParserSelectWithUnionQuery parser;
     ASTPtr ast = parseQuery(parser, query, 1000, 1000);
@@ -224,7 +224,8 @@ int main(int argc, char ** argv)
 
     const auto & scopes = resolver.getScopes();
     auto outer_scope = scopes[0];
-    std::cerr << "Scope dump " << outer_scope->dump() << std::endl;
+    std::cerr << "Scope dump " << std::endl;
+    std::cerr << outer_scope->dump() << std::endl;
 
     return 0;
 }

@@ -193,6 +193,8 @@ public:
 
     void resolveAsIdentifier(const IdentifierPtr & identifier)
     {
+        assert(resolved == false);
+
         *this = *identifier;
     }
 
@@ -313,10 +315,13 @@ public:
         {
             return {};
         }
-        else if (type == Type::column || type == Type::table)
+        else if (type == Type::column)
         {
             /// TODO: Expression
-
+            return {};
+        }
+        else if (type == Type::table)
+        {
             auto resolved_path = table->resolvePath(identifier_path);
 
             if (resolved_path.normalized_path.empty())
@@ -331,8 +336,8 @@ public:
         {
             if (identifier_path[0] == path[0])
             {
-                if (alias_identifier->getType() == Type::constant && identifier_path.size() == 1)
-                    return alias_identifier->alias_identifier;
+                if (alias_identifier->getTypeIgnoreAlias() == Type::constant && identifier_path.size() == 1)
+                    return nestedAlias();
 
                 IdentifierPath resolve_path = alias_identifier->path;
 
@@ -425,6 +430,16 @@ private:
         return value;
     }
 
+    IdentifierPtr nestedAlias() const
+    {
+        IdentifierPtr current_alias_identifier = alias_identifier;
+
+        if (current_alias_identifier && current_alias_identifier->getType() == Identifier::Type::alias)
+            current_alias_identifier = current_alias_identifier->alias_identifier;
+
+        return current_alias_identifier;
+    }
+
     static std::string concatenatePath(const IdentifierPath & path)
     {
         std::string result;
@@ -496,8 +511,9 @@ using ScopePtr = std::shared_ptr<Scope>;
 class Scope
 {
 public:
-    explicit Scope(ScopeType scope_type_)
+    explicit Scope(ScopeType scope_type_, const String & alias_name_)
         : scope_type(scope_type_)
+        , alias_name(alias_name_)
     {}
 
     ScopeType getScopeType() const
@@ -512,37 +528,43 @@ public:
         inner_scopes.emplace_back(std::move(scope));
     }
 
-    using IdentifierKey = size_t;
-
-    IdentifierKey addConstant(Field constant_value, const String & alias)
+    IdentifierPtr addConstant(Field constant_value, const String & alias, bool visible_from_parent_scope)
     {
-        size_t identifier_key = current_identifier_key;
-        ++current_identifier_key;
-
         auto identifier = Identifier::createUnresolved();
         identifier->resolveAsConstant(std::move(constant_value));
-        addAliasIdentifierIfNeeded(identifier, alias);
+        identifiers.emplace_back(identifier);
+        auto alias_identifier = addAliasIdentifierIfNeeded(identifier, alias);
 
-        return identifier_key;
+        if (visible_from_parent_scope)
+        {
+            if (alias_identifier)
+                visible_from_parent_scope_identifiers.emplace_back(alias_identifier);
+            else
+                visible_from_parent_scope_identifiers.emplace_back(identifier);
+        }
+
+        return identifier;
     }
 
-    IdentifierKey addIdentifierToResolve(const IdentifierPath & path, const String & alias)
+    IdentifierPtr addIdentifierToResolve(const IdentifierPath & path, const String & alias, bool visible_from_parent_scope)
     {
-        size_t identifier_key = current_identifier_key;
-        ++current_identifier_key;
-
         auto unresolved_identifier = Identifier::createUnresolved(path);
         unresolved_identifiers.emplace_back(unresolved_identifier);
-        addAliasIdentifierIfNeeded(unresolved_identifier, alias);
+        auto alias_identifier = addAliasIdentifierIfNeeded(unresolved_identifier, alias);
 
-        return identifier_key;
+        if (visible_from_parent_scope)
+        {
+            if (alias_identifier)
+                visible_from_parent_scope_identifiers.emplace_back(alias_identifier);
+            else
+                visible_from_parent_scope_identifiers.emplace_back(unresolved_identifier);
+        }
+
+        return unresolved_identifier;
     }
 
-    IdentifierKey addTableExpression(DatabaseUpdatedPtr database, TablePtr table, const String & alias)
+    IdentifierPtr addTableExpression(DatabaseUpdatedPtr database, TablePtr table, const String & alias)
     {
-        size_t identifier_key = current_identifier_key;
-        ++current_identifier_key;
-
         auto table_identifier = Identifier::createUnresolved();
         table_identifier->resolveAsTable({database->getName(), table->getStorageID().getTableName()}, table, database);
         table_identifier->setScope(this);
@@ -550,33 +572,57 @@ public:
 
         if (!alias.empty())
         {
-            auto alias_identifer = Identifier::createUnresolved();
-            alias_identifer->resolveAsAlias(table_identifier, alias);
-            alias_identifer->setScope(this);
-            table_identifiers.emplace_back(alias_identifer);
+            auto alias_identifier = Identifier::createUnresolved();
+            alias_identifier->resolveAsAlias(table_identifier, alias);
+            alias_identifier->setScope(this);
+            table_identifiers.emplace_back(alias_identifier);
         }
 
-        return identifier_key;
+        return table_identifier;
+    }
+
+    IdentifierPtr resolveVisibleIdentifier(const IdentifierPath & path)
+    {
+        IdentifierPtr result_identifier;
+
+        for (const auto & visible_identifier : visible_from_parent_scope_identifiers)
+        {
+            auto identifier = visible_identifier->resolvePath(path);
+            if (identifier && result_identifier)
+                throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Duplicate in visible identifiers");
+
+            result_identifier = identifier;
+        }
+
+        return result_identifier;
     }
 
     IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path)
     {
-        std::cerr << "Scope::tryResolveIdentifierFromAliases " << path[0] << std::endl;
+        std::cerr << "Scope::tryResolveIdentifierFromAliases " << this << " path " << toString(path) << std::endl;
 
         auto it = alias_name_to_alias_identifier.find(path[0]);
         if (it == alias_name_to_alias_identifier.end())
+        {
+            std::cerr << "No such alias identifier " << std::endl;
             return nullptr;
-
-        std::cerr << "Scope::tryResolveIdentifierFromAliases start" << std::endl;
+        }
 
         auto alias_identifier = it->second;
 
         if (alias_identifier->isResolved())
-            return alias_identifier->resolvePath(path);
+        {
+            auto identifier = alias_identifier->resolvePath(path);
+            std::cerr << "Alias identifier " << toString(alias_identifier->getAliasIdentifier()->getPath()) << std::endl;
+            std::cerr << "Alias is resolved " << identifier << std::endl;
+            return identifier;
+        }
         else
+        {
+            std::cerr << "Resolve alias identifier " << toString(alias_identifier->getAliasIdentifier()->getPath()) << std::endl;
             resolveIdentifier(alias_identifier->getAliasIdentifier());
-
-        return nullptr;
+            return alias_identifier->getAliasIdentifier();
+        }
     }
 
     IdentifierPtr tryResolveIdentifierFromTables(const IdentifierPath & path)
@@ -597,11 +643,7 @@ public:
 
     void resolveIdentifier(IdentifierPtr unresolved_identifier)
     {
-        std::cerr << "Scope::resolveIdentifier " << toString(unresolved_identifier->getPath()) << std::endl;
-
         auto it = identifier_to_resolve_status.find(unresolved_identifier.get());
-        std::cerr << "Identifier iterator is valid " << (it != identifier_to_resolve_status.end()) << std::endl;
-
         if (it->second == ResolveStatus::in_resolve_process)
             throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Cyclic aliases for identifier {}", toString(unresolved_identifier->getPath()));
 
@@ -611,17 +653,23 @@ public:
         if (resolved_from_aliases)
             unresolved_identifier->resolveAsIdentifier(resolved_from_aliases);
 
-        auto resolved_from_tables = tryResolveIdentifierFromTables(unresolved_identifier->getPath());
-        if (resolved_from_tables)
-            unresolved_identifier->resolveAsIdentifier(resolved_from_tables);
-
-        Scope * parent_scope_to_check = parent_scope;
-
-        while (parent_scope_to_check)
+        if (!unresolved_identifier->isResolved())
         {
-            auto resolved_identifier = parent_scope_to_check->tryResolveIdentifierFromAliases(unresolved_identifier->getPath());
-            if (resolved_identifier)
-                unresolved_identifier->resolveAsIdentifier(resolved_identifier);
+            auto resolved_from_tables = tryResolveIdentifierFromTables(unresolved_identifier->getPath());
+            if (resolved_from_tables)
+                unresolved_identifier->resolveAsIdentifier(resolved_from_tables);
+        }
+
+        if (!unresolved_identifier->isResolved())
+        {
+            Scope * parent_scope_to_check = parent_scope;
+
+            while (parent_scope_to_check)
+            {
+                auto resolved_identifier = parent_scope_to_check->tryResolveIdentifierFromAliases(unresolved_identifier->getPath());
+                if (resolved_identifier)
+                    unresolved_identifier->resolveAsIdentifier(resolved_identifier);
+            }
         }
 
         if (!unresolved_identifier->isResolved())
@@ -637,7 +685,7 @@ public:
 
     void resolveIdentifiers()
     {
-        std::cerr << "Scope::resolveIdentifiers" << std::endl;
+        std::cerr << "Scope::resolveIdentifiers " << std::endl;
 
         for (auto & identifier : identifiers)
             identifier_to_resolve_status[identifier.get()] = ResolveStatus::resolved;
@@ -653,44 +701,60 @@ public:
             auto unresolved_identifier = unresolved_identifiers.back();
             unresolved_identifiers.pop_back();
 
-            /// Identifier potentially can be resolved from inner scope
-            /// or it can be resolved recursively during resolveIdentifier
+            /// Identifier potentially can be resolved during inner scope resolveIdentifiers call
+            /// or it can be resolved recursively during resolveIdentifier call
             auto resolve_status_it = identifier_to_resolve_status.find(unresolved_identifier.get());
             if (resolve_status_it->second == ResolveStatus::resolved)
                 continue;
 
             resolveIdentifier(unresolved_identifier);
         }
+
     }
 
     std::string dump() const
     {
         WriteBufferFromOwnString out;
 
+        out << "Identifiers: " << identifiers.size() << '\n';
         for (const auto & identifier : identifiers)
-            out << identifier->dump() << "\n";
+            out << identifier->dump() << '\n';
+
+        out << "Unresolved identifiers " << unresolved_identifiers.size() << '\n';
+        for (const auto & identifier : unresolved_identifiers)
+            out << identifier->dump() << '\n';
+
+        out << "Aliases: " << alias_name_to_alias_identifier.size() << '\n';
+        for (const auto & [_, identifier] : alias_name_to_alias_identifier)
+            out << identifier->dump() << '\n';
 
         return out.str();
     }
 
 private:
 
-    void addAliasIdentifierIfNeeded(IdentifierPtr identifier, const String & alias)
+    IdentifierPtr addAliasIdentifierIfNeeded(IdentifierPtr identifier, const String & alias)
     {
         if (alias.empty())
-            return;
+            return nullptr;
 
         auto alias_identifer = Identifier::createUnresolved();
         alias_identifer->resolveAsAlias(identifier, alias);
         alias_identifer->setScope(this);
         alias_name_to_alias_identifier[alias] = alias_identifer;
+
+        return alias_identifer;
     }
 
     ScopeType scope_type;
 
+    String alias_name;
+
     std::vector<IdentifierPtr> table_identifiers;
 
     std::vector<ScopePtr> inner_scopes;
+
+    std::vector<IdentifierPtr> visible_from_parent_scope_identifiers;
 
     std::vector<IdentifierPtr> identifiers;
 
@@ -707,9 +771,7 @@ private:
 
     std::unordered_map<Identifier *, ResolveStatus> identifier_to_resolve_status;
 
-    Scope * parent_scope;
-
-    IdentifierKey current_identifier_key = 0;
+    Scope * parent_scope = nullptr;
 
 };
 
@@ -740,6 +802,24 @@ public:
         return scopes;
     }
 
+    IdentifierPtr getIdentifierFor(ASTIdentifier * identifier)
+    {
+        auto it = ast_identifier_to_identifier.find(identifier);
+        if (it == ast_identifier_to_identifier.end())
+            return nullptr;
+
+        return it->second;
+    }
+
+    IdentifierPtr getIdentifierFor(ASTLiteral * literal)
+    {
+        auto it = ast_literal_to_identifier.find(literal);
+        if (it == ast_literal_to_identifier.end())
+            return nullptr;
+
+        return it->second;
+    }
+
 private:
 
     void initialize()
@@ -751,7 +831,7 @@ private:
         {
             auto & select_query = select->as<ASTSelectQuery &>();
 
-            ScopePtr scope = std::make_shared<Scope>(ScopeType::subquery);
+            ScopePtr scope = std::make_shared<Scope>(ScopeType::subquery, "");
 
             if (auto * tables_ptr = select_query.tables()->as<ASTTablesInSelectQuery>())
                 addTableExpressionsIntoScope(*tables_ptr, scope);
@@ -763,15 +843,16 @@ private:
                 if (expression_type == ASTSelectQuery::Expression::TABLES)
                     continue;
 
+                bool visible_from_parent_scope = expression_type == ASTSelectQuery::Expression::SELECT;
                 auto expressions_untyped = select_query.getExpression(expression_type, false);
 
                 if (!expressions_untyped)
                     continue;
 
                 if (auto * expression_list = expressions_untyped->as<ASTExpressionList>())
-                    addExpressionListIntoScope(*expression_list, scope);
+                    addExpressionListIntoScope(*expression_list, scope, visible_from_parent_scope);
                 else
-                    addExpressionElementIntoScope(expressions_untyped, scope);
+                    addExpressionElementIntoScope(expressions_untyped, scope, visible_from_parent_scope);
             }
 
             scopes.push_back(scope);
@@ -822,21 +903,23 @@ private:
         }
     }
 
-    void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope)
+    void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope, bool visible_from_parent_scope)
     {
         for (const auto & expression_element : expression_List.children)
-            addExpressionElementIntoScope(expression_element, scope);
+            addExpressionElementIntoScope(expression_element, scope, visible_from_parent_scope);
     }
 
-    void addExpressionElementIntoScope(const ASTPtr & expression_part, ScopePtr & scope)
+    void addExpressionElementIntoScope(const ASTPtr & expression_part, ScopePtr & scope, bool visible_from_parent_scope)
     {
-        if (const auto * identifier = expression_part->as<ASTIdentifier>())
+        if (const auto * ast_identifier = expression_part->as<ASTIdentifier>())
         {
-            scope->addIdentifierToResolve(identifier->name_parts, identifier->tryGetAlias());
+            auto identifier = scope->addIdentifierToResolve(ast_identifier->name_parts, ast_identifier->tryGetAlias(), visible_from_parent_scope);
+            ast_identifier_to_identifier.emplace(ast_identifier, std::move(identifier));
         }
-        else if (const auto * select_literal = expression_part->as<ASTLiteral>())
+        else if (const auto * ast_literal = expression_part->as<ASTLiteral>())
         {
-            scope->addConstant(select_literal->value, select_literal->tryGetAlias());
+            auto identifier = scope->addConstant(ast_literal->value, ast_literal->tryGetAlias(), visible_from_parent_scope);
+            ast_literal_to_identifier.emplace(ast_literal, std::move(identifier));
         }
         else if (const auto * expression_list = expression_part->as<ASTExpressionList>())
         {
@@ -854,13 +937,9 @@ private:
 
     std::vector<ScopePtr> scopes;
 
-    struct IdentifierScopeAndKey
-    {
-        Scope * scope;
-        Scope::IdentifierKey key;
-    };
+    std::unordered_map<const ASTIdentifier *, IdentifierPtr> ast_identifier_to_identifier;
 
-    std::unordered_map<IAST *, IdentifierScopeAndKey> ast_node_to_identifier_data;
+    std::unordered_map<const ASTLiteral *, IdentifierPtr> ast_literal_to_identifier;
 };
 
 }
