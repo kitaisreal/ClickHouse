@@ -6,6 +6,7 @@
 
 #include <DataTypes/IDataType.h>
 #include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypesNumber.h>
 #include <Parsers/ParserSelectQuery.h>
 #include <Parsers/ParserSelectWithUnionQuery.h>
 #include <Parsers/ASTSelectWithUnionQuery.h>
@@ -36,9 +37,6 @@ using TablePtr = std::shared_ptr<const ITable>;
 
 class IDatabaseUpdated;
 using DatabaseUpdatedPtr = std::shared_ptr<IDatabaseUpdated>;
-
-class IExpression;
-using ExpressionPtr = std::shared_ptr<IExpression>;
 
 using IdentifierPath = std::vector<std::string>;
 
@@ -118,34 +116,85 @@ public:
 
 };
 
-// enum class ExpressionType
-// {
-//     constant,
-//     function,
-//     identifier
-// };
+enum class ExpressionType
+{
+    constant,
+    identifier
+};
 
-// class IExpression
-// {
+class IExpression;
+using ExpressionPtr = std::shared_ptr<const IExpression>;
 
-//     virtual ~IExpression() {}
+class IExpression
+{
+public:
 
-//     virtual ExpressionType getExpressionType();
+    virtual ~IExpression() {}
 
-//     virtual DataTypePtr getType();
+    virtual ExpressionType getExpressionType() const = 0;
 
-// };
+    virtual DataTypePtr getType() const = 0;
 
-class Identifier
+    virtual const Field & getConstant() const
+    {
+        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
+    }
+
+    virtual const Identifier & getIdentifier() const
+    {
+        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
+    }
+
+    virtual String dump() const = 0;
+
+};
+
+class ConstantExpression;
+using ConstantExpressionPtr = std::shared_ptr<const ConstantExpression>;
+
+class ConstantExpression : public IExpression
+{
+public:
+
+    static ConstantExpressionPtr create(Field value)
+    {
+        auto expression = std::make_shared<ConstantExpression>();
+        expression->value = std::move(value);
+        return expression;
+    }
+
+    ExpressionType getExpressionType() const override
+    {
+        return ExpressionType::constant;
+    }
+
+    DataTypePtr getType() const override
+    {
+        return std::make_shared<DataTypeUInt64>();
+    }
+
+    String dump() const override
+    {
+        return value.dump();
+    }
+
+    const Field & getConstant() const override
+    {
+        return value;
+    }
+
+private:
+    Field value;
+};
+
+class Identifier : public IExpression
 {
 public:
 
     enum class Type
     {
-        constant,
         column,
         table,
-        expression,
         lambda_parameter,
         alias
     };
@@ -154,14 +203,10 @@ public:
     {
         switch (identifier_type)
         {
-            case Type::constant:
-                return "Constant";
             case Type::column:
                 return "Column";
             case Type::table:
                 return "Table";
-            case Type::expression:
-                return "Expression";
             case Type::lambda_parameter:
                 return "Labmda parameter";
             case Type::alias:
@@ -186,22 +231,23 @@ public:
         return identifier;
     }
 
-    static IdentifierPtr createForConstant(Field constant_value)
+    static IdentifierPtr createAlias(ExpressionPtr expression, const String & alias_name)
     {
         auto identifier = createUnresolved();
 
-        identifier->type = Type::constant;
-        identifier->constant_value = std::move(constant_value);
-        identifier->resolved = true;
+        identifier->identifier_type = Type::alias;
+        identifier->path = {alias_name};
+        identifier->expression = expression;
+        identifier->resolved = false;
 
         return identifier;
     }
 
-    static IdentifierPtr createForAlias(IdentifierPtr alias_identifer, const String & alias_name)
+    static IdentifierPtr createAlias(IdentifierPtr alias_identifer, const String & alias_name)
     {
         auto identifier = createUnresolved();
 
-        identifier->type = Type::alias;
+        identifier->identifier_type = Type::alias;
         identifier->path = {alias_name};
         identifier->alias_identifier = alias_identifer;
         identifier->resolved = false;
@@ -215,7 +261,7 @@ public:
 
         auto identifier = createUnresolved();
 
-        identifier->type = Type::table;
+        identifier->identifier_type = Type::table;
         identifier->path = path_;
         identifier->table = table_;
         identifier->database = database_;
@@ -229,7 +275,7 @@ public:
         assert(resolved == false);
         assert(path_.size() >= 3);
 
-        type = Type::column;
+        identifier_type = Type::column;
         path = path_;
         data_type = data_type_;
         table = std::move(table_);
@@ -245,27 +291,33 @@ public:
         *this = *identifier;
     }
 
-    void resolveAsExpression(ExpressionPtr expression_)
-    {
-        assert(resolved == false);
-
-        type = Type::expression;
-        expression = expression_;
-        resolved = true;
-    }
-
     void resolveAsLambdaArgument(String & argument_name)
     {
         assert(resolved == false);
 
-        type = Type::lambda_parameter;
+        identifier_type = Type::lambda_parameter;
         path = {argument_name};
         resolved = true;
     }
 
-    Type getType() const
+    ExpressionType getExpressionType() const override
     {
-        return type;
+        return ExpressionType::identifier;
+    }
+
+    DataTypePtr getType() const override
+    {
+        return data_type;
+    }
+
+    const Identifier & getIdentifier() const override
+    {
+        return *this;
+    }
+
+    Type getIdentifierType() const
+    {
+        return identifier_type;
     }
 
     bool isResolved() const
@@ -291,7 +343,7 @@ public:
 
     Type getTypeRemoveAlias() const
     {
-        return removeAlias()->type;
+        return removeAlias()->identifier_type;
     }
 
     const IdentifierPath & getPath() const
@@ -301,10 +353,7 @@ public:
 
     const DataTypePtr & getDataType() const
     {
-        if (type == Type::alias)
-            return removeAliasIfNeeded()->getDataType();
-
-        return data_type;
+        return removeAliasIfNeeded()->data_type;
     }
 
     const IScope * getScope() const
@@ -319,23 +368,17 @@ public:
 
     TablePtr getTable() const
     {
-        if (type == Type::alias)
-            return removeAliasIfNeeded()->getTable();
-
-        return table;
+        return removeAliasIfNeeded()->table;
     }
 
     DatabaseUpdatedPtr getDatabase() const
     {
-        if (type == Type::alias)
-            return removeAliasIfNeeded()->getDatabase();
-
-        return database;
+        return removeAliasIfNeeded()->database;
     }
 
     ExpressionPtr getExpression() const
     {
-        return expression;
+        return removeAliasIfNeeded()->expression;
     }
 
     // IdentifierPtr resolvePath(const IdentifierPath & identifier_path)
@@ -388,18 +431,14 @@ public:
     //     }
     // }
 
-    std::string dump() const
+    std::string dump() const override
     {
         WriteBufferFromOwnString out;
 
-        out << identifierTypeToString(type);
+        out << identifierTypeToString(identifier_type);
         out << ' ';
 
-        if (type == Type::constant)
-        {
-            out << constant_value.dump();
-        }
-        else if (type == Type::column || type == Type::table || type == Type::lambda_parameter)
+        if (identifier_type == Type::column || identifier_type == Type::table || identifier_type == Type::lambda_parameter)
         {
             out << concatenatePath(path);
             out << ' ';
@@ -407,15 +446,15 @@ public:
             if (data_type)
                 out << data_type->getName();
         }
-        else if (type == Type::expression)
-        {
-            throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
-        }
-        else if (type == Type::alias)
+        else if (identifier_type == Type::alias)
         {
             out << path[0];
             out << ' ';
-            out << alias_identifier->dump();
+
+            if (alias_identifier)
+                out << alias_identifier->dump();
+            else
+                out << expression->dump();
         }
 
         return out.str();
@@ -424,10 +463,7 @@ public:
 private:
 
     /// Type of identifier
-    Type type;
-
-    /// Valid for constant
-    Field constant_value;
+    Type identifier_type;
 
     /// Valid for column, constant, expression identifier
     DataTypePtr data_type;
@@ -439,10 +475,8 @@ private:
     TablePtr table;
     DatabaseUpdatedPtr database;
 
-    /// Valid for expression identifier
+    /// Valid for alias identifier. Only expression or alias_identifier can be non null simualteneosly.
     ExpressionPtr expression;
-
-    /// Valid for alias identifier
     IdentifierPtr alias_identifier;
 
     /// Scope for identifier
@@ -455,7 +489,7 @@ private:
     {
         const Identifier * value = this;
 
-        while (value->type == Identifier::Type::alias)
+        while (value->identifier_type == Identifier::Type::alias)
             value = value->alias_identifier.get();
 
         return value;
@@ -506,20 +540,6 @@ public:
 
 using FunctionCatalogPtr = std::shared_ptr<IFunctionCatalog>;
 
-class IExpression
-{
-public:
-
-    using ExpressionArguments = std::vector<IdentifierPtr>;
-
-    virtual ~IExpression() {}
-
-    virtual ExpressionArguments getArguments() const = 0;
-
-    virtual DataTypePtr getResultType() const = 0;
-
-};
-
 enum ScopeType
 {
     query,
@@ -539,7 +559,7 @@ public:
 
     virtual void resolveIdentifiers() = 0;
 
-    virtual IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) = 0;
+    virtual ExpressionPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) = 0;
 
     IScope * parent_scope;
 };
@@ -565,25 +585,45 @@ public:
         inner_scopes.emplace_back(std::move(scope));
     }
 
-    IdentifierPtr addConstant(Field constant_value, const String & alias, ASTSelectQuery::Expression query_expression_part)
+    void addConstant(Field constant_value, const String & alias, ASTSelectQuery::Expression query_expression_part)
     {
-        auto identifier = Identifier::createForConstant(std::move(constant_value));
-        identifiers.emplace_back(identifier);
-        auto alias_identifier = addAliasIdentifierIfNeeded(identifier, alias);
+        auto constant_expression = ConstantExpression::create(std::move(constant_value));
+        auto & expressions = query_expression_type_to_expressions[query_expression_part];
 
-        return identifier;
+        if (!alias.empty())
+        {
+            auto alias_identifer = Identifier::createAlias(constant_expression, alias);
+            alias_identifer->setScope(this);
+            alias_name_to_alias_identifier[alias] = alias_identifer;
+            expressions.emplace_back(std::move(alias_identifer));
+        }
+        else
+        {
+            expressions.emplace_back(std::move(constant_expression));
+        }
     }
 
-    IdentifierPtr addIdentifierToResolve(const IdentifierPath & path, const String & alias, ASTSelectQuery::Expression query_expression_part)
+    void addIdentifier(const IdentifierPath & path, const String & alias, ASTSelectQuery::Expression query_expression_part)
     {
         auto unresolved_identifier = Identifier::createUnresolved(path);
         unresolved_identifiers.emplace_back(unresolved_identifier);
-        auto alias_identifier = addAliasIdentifierIfNeeded(unresolved_identifier, alias);
 
-        return unresolved_identifier;
+        auto & expressions = query_expression_type_to_expressions[query_expression_part];
+
+        if (!alias.empty())
+        {
+            auto alias_identifer = Identifier::createAlias(unresolved_identifier, alias);
+            alias_identifer->setScope(this);
+            alias_name_to_alias_identifier[alias] = alias_identifer;
+            expressions.emplace_back(std::move(alias_identifer));
+        }
+        else
+        {
+            expressions.emplace_back(std::move(unresolved_identifier));
+        }
     }
 
-    IdentifierPtr addTableExpression(DatabaseUpdatedPtr database, TablePtr table, const String & alias)
+    void addTableExpression(DatabaseUpdatedPtr database, TablePtr table, const String & alias)
     {
         std::cerr << "Scope::addTableExpression " << table->getStorageID().getFullNameNotQuoted();
         std::cerr << " alias " << alias << std::endl;
@@ -594,15 +634,13 @@ public:
 
         if (!alias.empty())
         {
-            auto alias_identifier = Identifier::createForAlias(table_identifier, alias);
+            auto alias_identifier = Identifier::createAlias(table_identifier, alias);
             alias_identifier->setScope(this);
             table_identifiers.emplace_back(alias_identifier);
         }
-
-        return table_identifier;
     }
 
-    IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) override
+    ExpressionPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) override
     {
         std::cerr << "Scope::tryResolveIdentifierFromAliases " << this << " path " << toString(path) << std::endl;
 
@@ -615,7 +653,7 @@ public:
 
         auto alias_identifier = it->second;
 
-        IdentifierPtr result;
+        ExpressionPtr result;
 
         if (alias_identifier->isResolved())
         {
@@ -654,7 +692,7 @@ public:
         return result_identifier;
     }
 
-    IdentifierPtr tryResolveIdentifierFromParentScope(const IdentifierPath & path)
+    ExpressionPtr tryResolveIdentifierFromParentScope(const IdentifierPath & path)
     {
         IScope * parent_scope_to_check = parent_scope;
 
@@ -758,30 +796,26 @@ public:
 
 private:
 
-    IdentifierPtr addAliasIdentifierIfNeeded(IdentifierPtr identifier, const String & alias)
+    IdentifierPtr addAliasForIdentifierIfNeeded(IdentifierPtr identifier, const String & alias)
     {
         if (alias.empty())
             return nullptr;
 
-        auto alias_identifer = Identifier::createForAlias(identifier, alias);
+        auto alias_identifer = Identifier::createAlias(identifier, alias);
         alias_identifer->setScope(this);
         alias_name_to_alias_identifier[alias] = alias_identifer;
 
         return alias_identifer;
     }
 
-    static IdentifierPtr resolvePathWithIdentifier(const IdentifierPath & path_to_resolve, const IdentifierPtr & identifier)
+    static ExpressionPtr resolvePathWithIdentifier(const IdentifierPath & path_to_resolve, const IdentifierPtr & identifier)
     {
         assert(!path_to_resolve.empty());
 
-        auto type = identifier->getType();
+        auto identifier_type = identifier->getIdentifierType();
         const auto & path = identifier->getPath();
 
-        if (type == Identifier::Type::constant)
-        {
-            return identifier;
-        }
-        else if (type == Identifier::Type::column)
+        if (identifier_type == Identifier::Type::column)
         {
             auto table = identifier->getTable();
 
@@ -803,7 +837,7 @@ private:
                 return {};
             }
         }
-        else if (type == Identifier::Type::table)
+        else if (identifier_type == Identifier::Type::table)
         {
             auto table = identifier->getTable();
             auto database = identifier->getDatabase();
@@ -817,7 +851,7 @@ private:
 
             return resolved_identifier;
         }
-        else if (type == Identifier::Type::alias)
+        else if (identifier_type == Identifier::Type::alias)
         {
             auto alias_identifier = identifier->getAliasIdentifier();
 
@@ -825,8 +859,11 @@ private:
                 return {};
 
             /// If alias recursively points to constant return it is resolved to that constant
-            if (alias_identifier->getType() == Identifier::Type::constant && path_to_resolve.size() == 1)
-                return alias_identifier;
+            if (alias_identifier->getExpression() && path_to_resolve.size() == 1)
+                return alias_identifier->getExpression();
+
+            if (alias_identifier->getExpression())
+                throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Alias to non expressions are not yet supported");
 
             /** If alias points to other entity that can resolve path.
               * We replace start of identifier_path that matched alias, with
@@ -867,6 +904,8 @@ private:
 
     std::vector<IdentifierPtr> unresolved_identifiers;
 
+    std::unordered_map<ASTSelectQuery::Expression, std::vector<ExpressionPtr>> query_expression_type_to_expressions;
+
     std::unordered_map<std::string, IdentifierPtr> alias_name_to_alias_identifier;
 
     enum class ResolveStatus
@@ -904,7 +943,7 @@ public:
 
     const std::vector<QueryTreePtr> & getQueryTrees() const
     {
-        return scopes;
+        return query_trees;
     }
 
 private:
@@ -938,9 +977,9 @@ private:
                     continue;
 
                 if (auto * expression_list = expressions_untyped->as<ASTExpressionList>())
-                    addExpressionListIntoTree(*expression_list, *query_tree);
+                    addExpressionListIntoTree(*expression_list, *query_tree, expression_type);
                 else
-                    addExpressionElementIntoTree(expressions_untyped, *query_tree);
+                    addExpressionElementIntoTree(expressions_untyped, *query_tree, expression_type);
             }
 
             query_trees.push_back(std::move(query_tree));
@@ -977,7 +1016,7 @@ private:
                         throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {} doesn't exists", table_id.table_name);
 
                     auto table = database->getTable(table_id.table_name);
-                    tree->addTableExpression(database, table, ast_table_identifier.tryGetAlias());
+                    tree.addTableExpression(database, table, ast_table_identifier.tryGetAlias());
                 }
                 else
                 {
@@ -991,33 +1030,21 @@ private:
         }
     }
 
-    void addExpressionListIntoTree(const ASTExpressionList & expression_List, QueryTree & tree)
+    static void addExpressionListIntoTree(const ASTExpressionList & expression_List, QueryTree & tree, ASTSelectQuery::Expression expression)
     {
         for (const auto & expression_element : expression_List.children)
-            addExpressionElementIntoTree(expression_element, tree);
+            addExpressionElementIntoTree(expression_element, tree, expression);
     }
 
-    void addExpressionElementIntoTree(const ASTPtr & expression_part, QueryTree & tree)
+    static void addExpressionElementIntoTree(const ASTPtr & expression_part, QueryTree & tree, ASTSelectQuery::Expression expression)
     {
         if (const auto * ast_identifier = expression_part->as<ASTIdentifier>())
         {
-            auto identifier = scope->addIdentifierToResolve(ast_identifier->name_parts, ast_identifier->tryGetAlias());
-            ast_identifier_to_identifier.emplace(ast_identifier, identifier);
-
-            identifier_path_to_identifier[toString(ast_identifier->name_parts)] = identifier;
-            auto alias = ast_identifier->tryGetAlias();
-            if (!alias.empty())
-                alias_to_identifier[toString(ast_identifier->name_parts)] = identifier;
+            tree.addIdentifier(ast_identifier->name_parts, ast_identifier->tryGetAlias(), expression);
         }
         else if (const auto * ast_literal = expression_part->as<ASTLiteral>())
         {
-            auto identifier = scope->addConstant(ast_literal->value, ast_literal->tryGetAlias());
-            ast_literal_to_identifier.emplace(ast_literal, identifier);
-
-            auto alias = ast_literal->tryGetAlias();
-            if (!alias.empty())
-                alias_to_identifier[alias] = identifier;
-
+            tree.addConstant(ast_literal->value, ast_literal->tryGetAlias(), expression);
         }
         else if (const auto * expression_list = expression_part->as<ASTExpressionList>())
         {
