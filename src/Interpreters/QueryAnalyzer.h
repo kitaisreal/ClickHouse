@@ -29,7 +29,7 @@ namespace ErrorCodes
     extern const int UNKNOWN_IDENTIFIER;
 }
 
-class Scope;
+class IScope;
 
 class ITable;
 using TablePtr = std::shared_ptr<const ITable>;
@@ -117,6 +117,24 @@ public:
     virtual TablePtr getTable(const String & table) const = 0;
 
 };
+
+// enum class ExpressionType
+// {
+//     constant,
+//     function,
+//     identifier
+// };
+
+// class IExpression
+// {
+
+//     virtual ~IExpression() {}
+
+//     virtual ExpressionType getExpressionType();
+
+//     virtual DataTypePtr getType();
+
+// };
 
 class Identifier
 {
@@ -289,12 +307,12 @@ public:
         return data_type;
     }
 
-    const Scope * getScope() const
+    const IScope * getScope() const
     {
         return scope;
     }
 
-    void setScope(Scope * scope_)
+    void setScope(IScope * scope_)
     {
         scope = scope_;
     }
@@ -428,7 +446,7 @@ private:
     IdentifierPtr alias_identifier;
 
     /// Scope for identifier
-    Scope *scope = nullptr;
+    IScope *scope = nullptr;
 
     /// Is resolved
     bool resolved = false;
@@ -504,67 +522,63 @@ public:
 
 enum ScopeType
 {
-    subquery,
+    query,
     expression
 };
 
-class Scope;
-using ScopePtr = std::shared_ptr<Scope>;
+class QueryTree;
+using QueryTreePtr = std::shared_ptr<QueryTree>;
 
-class Scope
+class IScope
 {
 public:
-    explicit Scope(ScopeType scope_type_, const String & alias_name_)
-        : scope_type(scope_type_)
-        , alias_name(alias_name_)
+
+    virtual ~IScope() {}
+
+    virtual ScopeType getScopeType() const = 0;
+
+    virtual void resolveIdentifiers() = 0;
+
+    virtual IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) = 0;
+
+    IScope * parent_scope;
+};
+
+using ScopePtr = std::shared_ptr<IScope>;
+
+class QueryTree : public IScope
+{
+public:
+    explicit QueryTree(const String & alias_name_)
+        : alias_name(alias_name_)
     {}
 
-    ScopeType getScopeType() const
+    ScopeType getScopeType() const override
     {
-        return scope_type;
+        return ScopeType::query;
     }
 
-    void addScope(ScopePtr scope)
+    void addInnerScope(ScopePtr scope)
     {
         assert(scope->parent_scope != nullptr);
         scope->parent_scope = this;
         inner_scopes.emplace_back(std::move(scope));
     }
 
-    IdentifierPtr addConstant(Field constant_value, const String & alias, bool visible_from_parent_scope)
+    IdentifierPtr addConstant(Field constant_value, const String & alias, ASTSelectQuery::Expression query_expression_part)
     {
         auto identifier = Identifier::createForConstant(std::move(constant_value));
         identifiers.emplace_back(identifier);
         auto alias_identifier = addAliasIdentifierIfNeeded(identifier, alias);
 
-        if (visible_from_parent_scope)
-        {
-            /// If identifier is visible from parent scope and alias is specified only alias is visible
-
-            if (alias_identifier)
-                visible_from_parent_scope_identifiers.emplace_back(alias_identifier);
-            else
-                visible_from_parent_scope_identifiers.emplace_back(identifier);
-        }
-
         return identifier;
     }
 
-    IdentifierPtr addIdentifierToResolve(const IdentifierPath & path, const String & alias, bool visible_from_parent_scope)
+    IdentifierPtr addIdentifierToResolve(const IdentifierPath & path, const String & alias, ASTSelectQuery::Expression query_expression_part)
     {
         auto unresolved_identifier = Identifier::createUnresolved(path);
         unresolved_identifiers.emplace_back(unresolved_identifier);
         auto alias_identifier = addAliasIdentifierIfNeeded(unresolved_identifier, alias);
-
-        if (visible_from_parent_scope)
-        {
-            /// If identifier is visible from parent scope and alias is specified only alias is visible
-
-            if (alias_identifier)
-                visible_from_parent_scope_identifiers.emplace_back(alias_identifier);
-            else
-                visible_from_parent_scope_identifiers.emplace_back(unresolved_identifier);
-        }
 
         return unresolved_identifier;
     }
@@ -588,23 +602,7 @@ public:
         return table_identifier;
     }
 
-    IdentifierPtr resolveVisibleIdentifier(const IdentifierPath & path)
-    {
-        IdentifierPtr result_identifier;
-
-        for (const auto & visible_identifier : visible_from_parent_scope_identifiers)
-        {
-            auto identifier = resolvePathWithIdentifier(path, visible_identifier);
-            if (identifier && result_identifier)
-                throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Duplicate in visible identifiers");
-
-            result_identifier = identifier;
-        }
-
-        return result_identifier;
-    }
-
-    IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path)
+    IdentifierPtr tryResolveIdentifierFromAliases(const IdentifierPath & path) override
     {
         std::cerr << "Scope::tryResolveIdentifierFromAliases " << this << " path " << toString(path) << std::endl;
 
@@ -656,6 +654,20 @@ public:
         return result_identifier;
     }
 
+    IdentifierPtr tryResolveIdentifierFromParentScope(const IdentifierPath & path)
+    {
+        IScope * parent_scope_to_check = parent_scope;
+
+        while (parent_scope_to_check)
+        {
+            auto resolved_identifier = parent_scope_to_check->tryResolveIdentifierFromAliases(path);
+            if (resolved_identifier)
+                return resolved_identifier;
+        }
+
+        return nullptr;
+    }
+
     void resolveIdentifier(IdentifierPtr unresolved_identifier)
     {
         std::cerr << "Scope::resolveIdentifier start " << toString(unresolved_identifier->getPath()) << std::endl;
@@ -679,14 +691,10 @@ public:
 
         if (!unresolved_identifier->isResolved())
         {
-            Scope * parent_scope_to_check = parent_scope;
+            auto resolved_from_parent_scope = tryResolveIdentifierFromParentScope(unresolved_identifier->getPath());
 
-            while (parent_scope_to_check)
-            {
-                auto resolved_identifier = parent_scope_to_check->tryResolveIdentifierFromAliases(unresolved_identifier->getPath());
-                if (resolved_identifier)
-                    unresolved_identifier->resolveAsIdentifier(resolved_identifier);
-            }
+            if (resolved_from_parent_scope)
+                unresolved_identifier->resolveAsIdentifier(resolved_from_parent_scope);
         }
 
         if (!unresolved_identifier->isResolved())
@@ -701,7 +709,7 @@ public:
         }
     }
 
-    void resolveIdentifiers()
+    void resolveIdentifiers() override
     {
         std::cerr << "Scope::resolveIdentifiers " << std::endl;
 
@@ -849,15 +857,11 @@ private:
         }
     }
 
-    ScopeType scope_type;
-
     String alias_name;
 
     std::vector<IdentifierPtr> table_identifiers;
 
     std::vector<ScopePtr> inner_scopes;
-
-    std::vector<IdentifierPtr> visible_from_parent_scope_identifiers;
 
     std::vector<IdentifierPtr> identifiers;
 
@@ -874,11 +878,9 @@ private:
 
     std::unordered_map<Identifier *, ResolveStatus> identifier_to_resolve_status;
 
-    Scope * parent_scope = nullptr;
-
 };
 
-class IdentifierResolver
+class QueryAnalyzer
 {
 public:
     struct Settings
@@ -887,7 +889,7 @@ public:
         bool prefer_column_name_to_alias;
     };
 
-    explicit IdentifierResolver(
+    explicit QueryAnalyzer(
         ASTPtr select_with_union_query_,
         DatabaseCatalogPtr database_catalog_,
         FunctionCatalogPtr function_catalog_,
@@ -900,37 +902,9 @@ public:
         initialize();
     }
 
-    const std::vector<ScopePtr> & getScopes() const
+    const std::vector<QueryTreePtr> & getQueryTrees() const
     {
         return scopes;
-    }
-
-    IdentifierPtr getIdentifierFor(ASTIdentifier * identifier)
-    {
-        auto it = ast_identifier_to_identifier.find(identifier);
-        if (it == ast_identifier_to_identifier.end())
-            return nullptr;
-
-        return it->second;
-    }
-
-    IdentifierPtr getIdentifierFor(ASTLiteral * literal)
-    {
-        auto it = ast_literal_to_identifier.find(literal);
-        if (it == ast_literal_to_identifier.end())
-            return nullptr;
-
-        return it->second;
-    }
-
-    IdentifierPtr getIdentifierForPath(const IdentifierPath & path)
-    {
-        return identifier_path_to_identifier[toString(path)];
-    }
-
-    IdentifierPtr getIdentifierForAlias(const String & alias)
-    {
-        return alias_to_identifier[alias];
     }
 
 private:
@@ -946,10 +920,10 @@ private:
 
             std::cerr << select->dumpTree() << std::endl;
 
-            ScopePtr scope = std::make_shared<Scope>(ScopeType::subquery, "");
+            auto query_tree = std::make_shared<QueryTree>("");
 
             if (auto * tables_ptr = select_query.tables()->as<ASTTablesInSelectQuery>())
-                addTableExpressionsIntoScope(*tables_ptr, scope);
+                addTableExpressionsIntoTree(*tables_ptr, *query_tree);
 
             for (size_t i = 0; i < static_cast<size_t>(ASTSelectQuery::Expression::SETTINGS); ++i)
             {
@@ -958,26 +932,25 @@ private:
                 if (expression_type == ASTSelectQuery::Expression::TABLES)
                     continue;
 
-                bool visible_from_parent_scope = expression_type == ASTSelectQuery::Expression::SELECT;
                 auto expressions_untyped = select_query.getExpression(expression_type, false);
 
                 if (!expressions_untyped)
                     continue;
 
                 if (auto * expression_list = expressions_untyped->as<ASTExpressionList>())
-                    addExpressionListIntoScope(*expression_list, scope, visible_from_parent_scope);
+                    addExpressionListIntoTree(*expression_list, *query_tree);
                 else
-                    addExpressionElementIntoScope(expressions_untyped, scope, visible_from_parent_scope);
+                    addExpressionElementIntoTree(expressions_untyped, *query_tree);
             }
 
-            scopes.push_back(scope);
+            query_trees.push_back(std::move(query_tree));
         }
 
-        for (const auto & scope : scopes)
-            scope->resolveIdentifiers();
+        for (const auto & query_tree : query_trees)
+            query_tree->resolveIdentifiers();
     }
 
-    void addTableExpressionsIntoScope(const ASTTablesInSelectQuery & tables, ScopePtr & scope)
+    void addTableExpressionsIntoTree(const ASTTablesInSelectQuery & tables, QueryTree & tree)
     {
         for (const auto & table_element_untyped : tables.children)
         {
@@ -1004,7 +977,7 @@ private:
                         throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {} doesn't exists", table_id.table_name);
 
                     auto table = database->getTable(table_id.table_name);
-                    scope->addTableExpression(database, table, ast_table_identifier.tryGetAlias());
+                    tree->addTableExpression(database, table, ast_table_identifier.tryGetAlias());
                 }
                 else
                 {
@@ -1018,17 +991,17 @@ private:
         }
     }
 
-    void addExpressionListIntoScope(const ASTExpressionList & expression_List, ScopePtr & scope, bool visible_from_parent_scope)
+    void addExpressionListIntoTree(const ASTExpressionList & expression_List, QueryTree & tree)
     {
         for (const auto & expression_element : expression_List.children)
-            addExpressionElementIntoScope(expression_element, scope, visible_from_parent_scope);
+            addExpressionElementIntoTree(expression_element, tree);
     }
 
-    void addExpressionElementIntoScope(const ASTPtr & expression_part, ScopePtr & scope, bool visible_from_parent_scope)
+    void addExpressionElementIntoTree(const ASTPtr & expression_part, QueryTree & tree)
     {
         if (const auto * ast_identifier = expression_part->as<ASTIdentifier>())
         {
-            auto identifier = scope->addIdentifierToResolve(ast_identifier->name_parts, ast_identifier->tryGetAlias(), visible_from_parent_scope);
+            auto identifier = scope->addIdentifierToResolve(ast_identifier->name_parts, ast_identifier->tryGetAlias());
             ast_identifier_to_identifier.emplace(ast_identifier, identifier);
 
             identifier_path_to_identifier[toString(ast_identifier->name_parts)] = identifier;
@@ -1038,7 +1011,7 @@ private:
         }
         else if (const auto * ast_literal = expression_part->as<ASTLiteral>())
         {
-            auto identifier = scope->addConstant(ast_literal->value, ast_literal->tryGetAlias(), visible_from_parent_scope);
+            auto identifier = scope->addConstant(ast_literal->value, ast_literal->tryGetAlias());
             ast_literal_to_identifier.emplace(ast_literal, identifier);
 
             auto alias = ast_literal->tryGetAlias();
@@ -1060,15 +1033,8 @@ private:
 
     Settings settings;
 
-    std::vector<ScopePtr> scopes;
-
-    std::unordered_map<const ASTIdentifier *, IdentifierPtr> ast_identifier_to_identifier;
-
-    std::unordered_map<const ASTLiteral *, IdentifierPtr> ast_literal_to_identifier;
-
-    std::unordered_map<std::string, IdentifierPtr> identifier_path_to_identifier;
-
-    std::unordered_map<std::string, IdentifierPtr> alias_to_identifier;
+    /// Multiple in case of UNION
+    std::vector<QueryTreePtr> query_trees;
 
 };
 
