@@ -75,46 +75,6 @@ std::string toString(const IdentifierPath & path)
     return buffer.str();
 }
 
-class Identifier;
-using IdentifierPtr = std::shared_ptr<Identifier>;
-
-struct IdentifierResolvedResult
-{
-    IdentifierPath normalized_path;
-    DataTypePtr identifier_type;
-};
-
-class ITable
-{
-public:
-
-    virtual ~ITable() {}
-
-    virtual StorageID getStorageID() const = 0;
-
-    virtual bool hasPath(const IdentifierPath & path) const = 0;
-
-    virtual IdentifierResolvedResult resolvePath(const IdentifierPath & path) const = 0;
-
-    /// TODO: Aliases
-
-    /// TODO: Asterisk
-
-};
-
-class IDatabaseUpdated
-{
-public:
-
-    virtual ~IDatabaseUpdated() {}
-
-    virtual String getName() const = 0;
-
-    virtual bool hasTable(const String & table) const = 0;
-
-    virtual TablePtr getTable(const String & table) const = 0;
-
-};
 
 enum class ExpressionType
 {
@@ -134,16 +94,6 @@ public:
     virtual ExpressionType getExpressionType() const = 0;
 
     virtual DataTypePtr getType() const = 0;
-
-    virtual const Field & getConstant() const
-    {
-        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
-    }
-
-    virtual const Identifier & getIdentifier() const
-    {
-        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Unsupported method");
-    }
 
     virtual String dump() const = 0;
 
@@ -485,7 +435,7 @@ private:
     /// Is resolved
     bool resolved = false;
 
-    const Identifier * removeAliasIfNeeded() const
+    const StoragePtr * removeAliasIfNeeded() const
     {
         const Identifier * value = this;
 
@@ -511,34 +461,6 @@ private:
         return result;
     }
 };
-
-class IDatabaseCatalog
-{
-public:
-
-    virtual ~IDatabaseCatalog() {}
-
-    virtual bool hasDatabase(const std::string & database_name) const = 0;
-
-    virtual DatabaseUpdatedPtr getDatabase(const std::string & database_name) const = 0;
-
-};
-
-using DatabaseCatalogPtr = std::shared_ptr<IDatabaseCatalog>;
-
-class IFunctionCatalog
-{
-public:
-
-    virtual ~IFunctionCatalog() {}
-
-    bool has(const String & function_name) const;
-
-    bool infer(const String & function_name, std::vector<DataTypePtr> argument_types) const;
-
-};
-
-using FunctionCatalogPtr = std::shared_ptr<IFunctionCatalog>;
 
 enum ScopeType
 {
