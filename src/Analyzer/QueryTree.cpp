@@ -24,38 +24,43 @@ void QueryTree::addInnerScope(ScopePtr scope)
 
 void QueryTree::addConstant(Field constant_value, const String & alias, ASTSelectQuery::Expression query_expression_part)
 {
+    (void)(query_expression_part);
     auto constant_expression = ConstantExpression::create(std::move(constant_value));
-    auto & expressions = query_expression_type_to_expressions[query_expression_part];
+    alias_name_to_expression[alias] = constant_expression;
+    // auto & expressions = query_expression_type_to_expressions[query_expression_part];
 
-    if (!alias.empty())
-    {
-        auto alias_identifer = Identifier::createAlias(constant_expression, alias);
-        alias_name_to_alias_identifier[alias] = alias_identifer;
-        expressions.emplace_back(std::move(alias_identifer));
-    }
-    else
-    {
-        expressions.emplace_back(std::move(constant_expression));
-    }
+    // if (!alias.empty())
+    // {
+    //     auto alias_identifer = Identifier::createAlias(constant_expression, alias);
+    //     alias_name_to_alias_identifier[alias] = alias_identifer;
+    //     expressions.emplace_back(std::move(alias_identifer));
+    // }
+    // else
+    // {
+    //     expressions.emplace_back(std::move(constant_expression));
+    // }
 }
 
 void QueryTree::addIdentifier(const IdentifierPath & path, const String & alias, ASTSelectQuery::Expression query_expression_part)
 {
-    auto unresolved_identifier = Identifier::createUnresolved(path);
-    unresolved_identifiers.emplace_back(unresolved_identifier);
+    (void)(query_expression_part);
+    // auto unresolved_identifier = Identifier::createUnresolved(path);
+    // unresolved_identifiers.emplace_back(unresolved_identifier);
+    alias_name_to_identifier_path[alias] = path;
+    unresolved_identifiers.emplace_back(path);
 
-    auto & expressions = query_expression_type_to_expressions[query_expression_part];
+    // auto & expressions = query_expression_type_to_expressions[query_expression_part];
 
-    if (!alias.empty())
-    {
-        auto alias_identifer = Identifier::createAlias(unresolved_identifier, alias);
-        alias_name_to_alias_identifier[alias] = alias_identifer;
-        expressions.emplace_back(std::move(alias_identifer));
-    }
-    else
-    {
-        expressions.emplace_back(std::move(unresolved_identifier));
-    }
+    // if (!alias.empty())
+    // {
+    //     auto alias_identifer = Identifier::createAlias(unresolved_identifier, alias);
+    //     alias_name_to_alias_identifier[alias] = alias_identifer;
+    //     expressions.emplace_back(std::move(alias_identifer));
+    // }
+    // else
+    // {
+    //     expressions.emplace_back(std::move(unresolved_identifier));
+    // }
 }
 
 void QueryTree::addTableExpression(TableCatalogPtr database, TablePtr table, const String & alias)
@@ -73,92 +78,101 @@ void QueryTree::addTableExpression(TableCatalogPtr database, TablePtr table, con
     }
 }
 
-ExpressionPtr QueryTree::tryResolveIdentifierFromAliases(const IdentifierPath & path)
+ExpressionPtr QueryTree::tryResolveExpressionFromAliases(const IdentifierPath & path)
 {
     std::cerr << "Scope::tryResolveIdentifierFromAliases " << this << " path " << toString(path) << std::endl;
 
-    auto it = alias_name_to_alias_identifier.find(path[0]);
-    if (it == alias_name_to_alias_identifier.end())
+    auto expression_it = alias_name_to_expression.find(path[0]);
+    if (expression_it != alias_name_to_expression.end())
     {
-        std::cerr << "Scope::tryResolveIdentifierFromAliases finish no result" << std::endl;
+        /// Resolve path from expression;
         return nullptr;
     }
 
-    auto alias_identifier = it->second;
+    auto identifier_it = alias_name_to_identifier_path.find(path[0]);
 
-    ExpressionPtr result;
 
-    if (alias_identifier->isResolved())
-    {
-        std::cerr << "Scope::tryResolveIdentifierFromAliases alias resolved " << toString(alias_identifier->getPath()) << std::endl;
-        result = alias_identifier->tryResolve(path);
-    }
-    else
-    {
-        std::cerr << "Scope::tryResolveIdentifierFromAliases alias not resolved start " << toString(alias_identifier->getPath())
-                  << std::endl;
-        resolveIdentifier(alias_identifier->getAliasIdentifier());
-        std::cerr << "Scope::tryResolveIdentifierFromAliases alias not resolved finished "
-                  << toString(alias_identifier->getAliasIdentifier()->getPath()) << std::endl;
-        result = resolvePathWithIdentifier(path, alias_identifier);
-    }
+    // auto alias_expression_placeholder = it->second;
 
-    std::cerr << "Scope::tryResolveIdentifierFromAliases finished " << result << std::endl;
+    // ExpressionPtr result;
+
+    // if (alias_expression_placeholder->isResolved())
+    // {
+    //     auto resolved_expression = alias_expression_placeholder->getExpression();
+    //     std::cerr << "Scope::tryResolveIdentifierFromAliases alias resolved " << resolved_expression->dump() << std::endl;
+    //     result = resolved_expression->tryResolve(path);
+    // }
+    // else
+    // {
+    //     std::cerr << "Scope::tryResolveIdentifierFromAliases alias not resolved start " << toString(alias_identifier->getPath())
+    //               << std::endl;
+    //     resolve(alias_);
+    //     std::cerr << "Scope::tryResolveIdentifierFromAliases alias not resolved finished "
+    //               << toString(alias_identifier->getAliasIdentifier()->getPath()) << std::endl;
+    //     result = resolvePathWithIdentifier(path, alias_identifier);
+    // }
+
+    // std::cerr << "Scope::tryResolveIdentifierFromAliases finished " << result << std::endl;
 
     return result;
 }
 
-ExpressionPtr QueryTree::tryResolveIdentifierFromTables(const IdentifierPath & path)
+ExpressionPtr QueryTree::tryResolveExpressionFromTables(const IdentifierPath & path)
 {
-    std::cerr << "Scope::tryResolveIdentifierFromTables " << this << " path " << toString(path) << std::endl;
+    std::cerr << "Scope::tryResolveExpressionFromTables " << this << " path " << toString(path) << std::endl;
 
-    ExpressionPtr result_identifier;
+    ExpressionPtr result_expression;
 
     for (auto & table_identifier : table_identifiers)
     {
         auto resolved_identifier = table_identifier->tryResolve(path);
 
-        if (resolved_identifier && result_identifier)
+        if (resolved_identifier && result_expression)
             throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Ambigious resolve identifier {}", toString(path));
 
-        result_identifier = resolved_identifier;
+        result_expression = resolved_identifier;
     }
 
-    std::cerr << "Scope::tryResolveIdentifierFromTables finished " << result_identifier << std::endl;
-    return result_identifier;
+    std::cerr << "Scope::tryResolveExpressionFromTables finished " << result_expression->dump() << std::endl;
+    return result_expression;
 }
 
-ExpressionPtr QueryTree::tryResolveIdentifierFromParentScope(const IdentifierPath & path)
+ExpressionPtr QueryTree::tryResolveExpressionFromParentScope(const IdentifierPath & path)
 {
     IScope * parent_scope_to_check = parent_scope;
 
     while (parent_scope_to_check)
     {
-        auto resolved_identifier = parent_scope_to_check->tryResolveIdentifierFromAliases(path);
-        if (resolved_identifier)
-            return resolved_identifier;
+        auto resolved_expression = parent_scope_to_check->tryResolveExpression(path);
+        if (resolved_expression)
+            return resolved_expression;
     }
 
     return nullptr;
 }
 
-void QueryTree::resolveIdentifier(IdentifierPtr unresolved_identifier)
+void QueryTree::resolveIdentifier(const IdentifierPath & unresolved_identifier_path)
 {
-    std::cerr << "Scope::resolveIdentifier start " << toString(unresolved_identifier->getPath()) << std::endl;
+    std::string unresolved_identifier_path_concatenated = toString(unresolved_identifier_path);
+    std::cerr << "Scope::resolveIdentifier start " << unresolved_identifier_path_concatenated << std::endl;
 
-    auto it = identifier_to_resolve_status.find(unresolved_identifier.get());
-    if (it->second == ResolveStatus::in_resolve_process)
-        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Cyclic aliases for identifier {}", toString(unresolved_identifier->getPath()));
+    auto it = identifier_path_to_resolve_status.find(unresolved_identifier_path_concatenated);
+    if (it->second.status == ResolveStatus::in_resolve_process)
+        throw Exception(ErrorCodes::UNSUPPORTED_METHOD, "Cyclic aliases for identifier {}", unresolved_identifier_path_concatenated);
 
-    identifier_to_resolve_status[unresolved_identifier.get()] = ResolveStatus::in_resolve_process;
+    it->second.status = ResolveStatus::in_resolve_process;
 
-    auto resolved_from_aliases = tryResolveIdentifierFromAliases(unresolved_identifier->getPath());
+    auto resolved_from_aliases = tryResolveIdentifierFromAliases(unresolved_identifier_path);
     if (resolved_from_aliases)
-        unresolved_identifier->resolveAsIdentifier(resolved_from_aliases);
+    {
+        it->second.status = ResolveStatus::resolved;
+        it->second = resolved_from_aliases;
+        return;
+    }
 
     if (!unresolved_identifier->isResolved())
     {
-        auto resolved_from_tables = tryResolveIdentifierFromTables(unresolved_identifier->getPath());
+        auto resolved_from_tables = tryResolveIdentifierFromTables(unresolved_identifier_path);
         if (resolved_from_tables)
             unresolved_identifier->resolveAsIdentifier(resolved_from_tables);
     }
@@ -178,33 +192,30 @@ void QueryTree::resolveIdentifier(IdentifierPtr unresolved_identifier)
     else
     {
         std::cerr << "Scope::resolveIdentifier finished " << toString(unresolved_identifier->getPath()) << std::endl;
-        identifiers.emplace_back(unresolved_identifier);
+        // identifiers.emplace_back(unresolved_identifier);
         identifier_to_resolve_status[unresolved_identifier.get()] = ResolveStatus::resolved;
     }
 }
 
 void QueryTree::resolveIdentifiers()
 {
-    std::cerr << "Scope::resolveIdentifiers " << std::endl;
-
-    for (auto & identifier : identifiers)
-        identifier_to_resolve_status[identifier.get()] = ResolveStatus::resolved;
-
     for (auto & unresolved_identifier : unresolved_identifiers)
-        identifier_to_resolve_status[unresolved_identifier.get()] = ResolveStatus::unresolved;
+        identifier_to_resolve_status[unresolved_identifier.get()] = {ResolveStatus::unresolved, nullptr};
 
     for (const auto & inner_scope : inner_scopes)
         inner_scope->resolveIdentifiers();
 
     while (!unresolved_identifiers.empty())
     {
-        auto unresolved_identifier = unresolved_identifiers.back();
+        auto unresolved_identifier_path = unresolved_identifiers.back();
         unresolved_identifiers.pop_back();
+
+        std::string unresolved_identifier_path_concatenated = toString(unresolved_identifier_path);
 
         /// Identifier potentially can be resolved during inner scope resolveIdentifiers call
         /// or it can be resolved recursively during resolveIdentifier call
-        auto resolve_status_it = identifier_to_resolve_status.find(unresolved_identifier.get());
-        if (resolve_status_it->second == ResolveStatus::resolved)
+        auto resolve_status_it = identifier_to_resolve_status.find(unresolved_identifier_path_concatenated);
+        if (resolve_status_it->second.status == ResolveStatus::resolved)
             continue;
 
         resolveIdentifier(unresolved_identifier);

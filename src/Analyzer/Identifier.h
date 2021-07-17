@@ -55,12 +55,6 @@ public:
         return identifier_type;
     }
 
-    bool isResolved() const override
-    {
-        const auto * expression = getExpressionRemoveAliasIfNeeded();
-        return expression->isResolved();
-    }
-
     ExpressionPtr tryResolve(const IdentifierPath &) override;
 
     ExpressionPtr getExpression() const

@@ -27,11 +27,6 @@ public:
         return value.dump();
     }
 
-    bool isResolved() const override
-    {
-        return true;
-    }
-
     ExpressionPtr tryResolve(const IdentifierPath &) override
     {
         return nullptr;

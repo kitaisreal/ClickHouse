@@ -31,10 +31,6 @@ public:
 
     virtual DataTypePtr getDataType() const = 0;
 
-    virtual void resolveType() = 0;
-
-    virtual bool isResolved() const = 0;
-
     virtual ExpressionPtr tryResolve(const IdentifierPath & path_to_resolve);
 
     virtual String dump() const = 0;

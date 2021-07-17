@@ -5,6 +5,7 @@
 #include <Analyzer/IScope.h>
 #include <Analyzer/IExpression.h>
 #include <Analyzer/Identifier.h>
+#include <Analyzer/ExpressionPlaceholder.h>
 
 
 namespace DB
@@ -30,19 +31,19 @@ public:
 
     void addTableExpression(TableCatalogPtr database, TablePtr table, const String & alias);
 
-    ExpressionPtr tryResolveIdentifierFromAliases(const IdentifierPath & path);
-
-    ExpressionPtr tryResolveIdentifierFromTables(const IdentifierPath & path);
-
-    ExpressionPtr tryResolveIdentifierFromParentScope(const IdentifierPath & path);
-
-    void resolveIdentifier(IdentifierPtr unresolved_identifier);
-
     void resolveIdentifiers() override;
 
     std::string dump() const;
 
 private:
+
+    ExpressionPtr tryResolveIdentifierFromAliases(const IdentifierPath & unresolved_identifier_path);
+
+    ExpressionPtr tryResolveIdentifierFromTables(const IdentifierPath & unresolved_identifier_path);
+
+    ExpressionPtr tryResolveIdentifierFromParentScope(const IdentifierPath & unresolved_identifier_path);
+
+    void resolveIdentifier(const IdentifierPath & unresolved_identifier_path);
 
     IdentifierPtr addAliasForIdentifierIfNeeded(IdentifierPtr identifier, const String & alias);
 
@@ -54,13 +55,11 @@ private:
 
     std::vector<ScopePtr> inner_scopes;
 
-    std::vector<IdentifierPtr> identifiers;
-
-    std::vector<IdentifierPtr> unresolved_identifiers;
-
-    std::unordered_map<ASTSelectQuery::Expression, std::vector<ExpressionPtr>> query_expression_type_to_expressions;
+    std::vector<IdentifierPath> unresolved_identifiers;
 
     std::unordered_map<std::string, ExpressionPtr> alias_name_to_expression;
+
+    std::unordered_map<std::string, IdentifierPath> alias_name_to_identifier_path;
 
     enum class ResolveStatus
     {
@@ -69,7 +68,15 @@ private:
         in_resolve_process
     };
 
-    std::unordered_map<Identifier *, ResolveStatus> identifier_to_resolve_status;
+    struct IdentifierResolveStatus
+    {
+        ResolveStatus status;
+        ExpressionPtr expression;
+    };
+
+    std::unordered_map<ExpressionPlaceholder *, ResolveStatus> expression_to_resolve_status;
+
+    std::unordered_map<std::string, IdentifierResolveStatus> identifier_path_to_resolve_status;
 
 };
 
