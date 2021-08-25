@@ -35,7 +35,8 @@ bool pathStartsWith(const std::filesystem::path & path, const std::filesystem::p
 /// Returns true if path starts with prefix path
 bool pathStartsWith(const String & path, const String & prefix_path);
 
-bool symlinkStartsWith(const String & path, const String & prefix_path);
+/// Returns true if symlink path starts with prefix path
+bool symlinkPathStartsWith(const String & path, const String & prefix_path);
 
 }
 
