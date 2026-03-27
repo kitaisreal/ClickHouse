@@ -1,3 +1,5 @@
+#include "config.h"
+
 #include <Interpreters/Cache/FileSegment.h>
 
 #include <filesystem>
@@ -630,6 +632,17 @@ void FileSegment::setDownloadedUnlocked(const FileSegmentGuard::Lock &)
 
     chassert(downloaded_size > 0);
     chassert(fs::file_size(getPath()) == downloaded_size);
+
+#if USE_ROCKSDB
+    if (!cache)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "FileSegment has no associated cache, cannot update RocksDB index");
+
+    if (auto index = cache->getRocksDBIndex())
+    {
+        auto km = getKeyMetadata();
+        index->put(file_key, offset(), static_cast<Int64>(downloaded_size), km->origin.segment_type);
+    }
+#endif
 }
 
 void FileSegment::setDownloadFailed()
@@ -714,9 +727,22 @@ void FileSegment::shrinkFileSegmentToDownloadedSize(const LockedKey & locked_key
              range().size(), result_size, downloaded_size.load());
 
     if (downloaded_size == result_size)
+    {
         setDownloadState(State::DOWNLOADED, lock);
+
+#if USE_ROCKSDB
+        chassert(cache);
+        if (auto index = cache->getRocksDBIndex())
+        {
+            auto km = getKeyMetadata();
+            index->put(file_key, offset(), static_cast<Int64>(downloaded_size), km->origin.segment_type);
+        }
+#endif
+    }
     else
+    {
         setDownloadState(State::PARTIALLY_DOWNLOADED, lock);
+    }
 
     segment_range.right = segment_range.left + result_size - 1;
 
